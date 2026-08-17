@@ -13,7 +13,7 @@ datasets:
     hf_config: "main"
     test_split: "test"
   math:
-    hf_name: "hendrycks/competition_math"
+    hf_name: "nlile/hendrycks-MATH-benchmark"   # mirror; original hendrycks/competition_math was taken down
     test_split: "test"
 
 greedy:

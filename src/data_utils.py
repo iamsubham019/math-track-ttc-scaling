@@ -43,18 +43,23 @@ def _load_gsm8k(split: str, limit: int | None):
 
 
 def _load_math(split: str, limit: int | None):
-    ds = hf_load_dataset("hendrycks/competition_math", split=split)
+    # NOTE: the original "hendrycks/competition_math" repo was removed from HF
+    # (copyright takedown). This mirror carries the same 12,500 problems plus
+    # a clean pre-extracted `answer` field, so we no longer need to parse
+    # \boxed{} out of the solution text ourselves.
+    hf_split = "test" if split == "test" else "train"
+    ds = hf_load_dataset("nlile/hendrycks-MATH-benchmark", split=hf_split)
     if limit:
         ds = ds.select(range(min(limit, len(ds))))
     items = []
     for i, row in enumerate(ds):
-        gold = _extract_boxed(row["solution"]) or row["solution"].strip()
+        gold = row["answer"].strip() if row.get("answer") else (_extract_boxed(row["solution"]) or row["solution"].strip())
         items.append({
             "id": f"math_{split}_{i}",
             "question": row["problem"],
             "gold_answer": gold,
             "level": row.get("level"),
-            "type": row.get("type"),
+            "type": row.get("subject"),
         })
     return items
 
