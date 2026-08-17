@@ -33,8 +33,11 @@ def _expand(model, tokenizer, prefix_messages: list[dict], partial_text: str,
         model, tokenizer, messages, max_new_tokens=STEP_MAX_TOKENS,
         temperature=temperature, top_p=0.95, num_return_sequences=branching_factor,
     )
-    # Truncate each expansion to its first step (up to first newline) to keep the tree granular.
-    steps = [g.split("\n")[0].strip() for g in generations]
+    # Use the full (token-bounded) generation as the step. Truncating at the
+    # first newline discards content: models often put a step header on its
+    # own line ("## Step 2: ...") with the actual calculation on the next
+    # line, so a naive split("\n")[0] keeps only the header and drops the math.
+    steps = [g.strip() for g in generations]
     return steps, flop_stats
 
 

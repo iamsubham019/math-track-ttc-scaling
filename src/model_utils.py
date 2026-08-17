@@ -37,10 +37,23 @@ def generate(model, tokenizer, messages: list[dict], max_new_tokens: int = 512,
              temperature: float = 0.0, top_p: float = 1.0, num_return_sequences: int = 1):
     """
     Generates completion(s) for a chat-formatted prompt.
+
+    If `messages` ends with an assistant turn (used by tree_search.py to
+    continue partial reasoning), the model must literally extend that text
+    rather than start a fresh turn. With add_generation_prompt=True, the
+    chat template closes the previous assistant turn and opens a new one —
+    causing the model to restart its reasoning from scratch instead of
+    continuing. continue_final_message=True avoids that.
+
     Returns (list[str] generations, dict flop_stats) where flop_stats lets you
     build the performance-vs-FLOPs curve without a separate profiler.
     """
-    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    continuing = len(messages) > 0 and messages[-1]["role"] == "assistant"
+    prompt = tokenizer.apply_chat_template(
+        messages, tokenize=False,
+        add_generation_prompt=not continuing,
+        continue_final_message=continuing,
+    )
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     input_len = inputs["input_ids"].shape[1]
 
@@ -66,7 +79,6 @@ def generate(model, tokenizer, messages: list[dict], max_new_tokens: int = 512,
         generations.append(tokenizer.decode(new_tokens, skip_special_tokens=True))
 
     # Rough FLOPs proxy: 2 * params * tokens generated (standard transformer inference estimate).
-    # Exact param counts are looked up by the caller from the model config if needed.
     flop_stats = {
         "input_tokens": input_len,
         "output_tokens_total": output_tokens_total,
