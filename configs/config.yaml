@@ -1,0 +1,63 @@
+# Central configuration for the Math Track (Partner A)
+
+models:
+  llama3.2-1b: "meta-llama/Llama-3.2-1B-Instruct"
+  llama3.2-3b: "meta-llama/Llama-3.2-3B-Instruct"
+  max_new_tokens: 512
+  dtype: "bfloat16"          # use "float16" if bfloat16 unsupported on your GPU
+  load_in_4bit: false        # set true to fit 3B on a smaller GPU
+
+datasets:
+  gsm8k:
+    hf_name: "openai/gsm8k"
+    hf_config: "main"
+    test_split: "test"
+  math:
+    hf_name: "hendrycks/competition_math"
+    test_split: "test"
+
+greedy:
+  temperature: 0.0           # greedy = no sampling
+
+best_of_n:
+  n_candidates: 8
+  temperature: 0.8
+  top_p: 0.95
+
+self_consistency:
+  n_samples: 8
+  temperature: 0.7
+  top_p: 0.95
+
+tree_search:
+  branching_factor: 3
+  max_depth: 4
+  temperature: 0.7
+  beam_width: 2               # how many partial paths survive each pruning step
+
+verifier:
+  base_model: "microsoft/deberta-v3-small"   # small, cheap classifier head
+  max_length: 512
+  train_epochs: 3
+  batch_size: 16
+  lr: 2.0e-5
+  # positive examples: (problem, correct solution) pairs
+  # negative examples: (problem, incorrect candidate) pairs sampled from best_of_n/self_consistency runs
+
+router:
+  difficulty_features:        # signals used to decide easy vs hard
+    - "verifier_confidence"
+    - "problem_length_tokens"
+    - "self_consistency_agreement"
+  easy_strategy: "greedy"
+  hard_strategy: "tree_search"
+  threshold: 0.6               # verifier-confidence cutoff below which a problem is "hard"
+
+paths:
+  logs_dir: "logs"
+  checkpoints_dir: "checkpoints"
+  results_dir: "logs/results"
+
+hf_hub:
+  repo_id: "YOUR_HF_USERNAME/math-track-ttc-scaling"   # <-- change this
+  private: true
