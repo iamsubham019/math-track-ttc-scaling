@@ -79,6 +79,7 @@ def generate(model, tokenizer, messages: list[dict], max_new_tokens: int = 512,
         generations.append(tokenizer.decode(new_tokens, skip_special_tokens=True))
 
     # Rough FLOPs proxy: 2 * params * tokens generated (standard transformer inference estimate).
+    # Exact param counts are looked up by the caller from the model config if needed.
     flop_stats = {
         "input_tokens": input_len,
         "output_tokens_total": output_tokens_total,

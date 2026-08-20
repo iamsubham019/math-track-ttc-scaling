@@ -40,7 +40,7 @@ verifier:
   max_length: 512
   train_epochs: 3
   batch_size: 16
-  lr: 2.0e-5
+  lr: 1.0e-5
   # positive examples: (problem, correct solution) pairs
   # negative examples: (problem, incorrect candidate) pairs sampled from best_of_n/self_consistency runs
 
@@ -59,5 +59,5 @@ paths:
   results_dir: "logs/results"
 
 hf_hub:
-  repo_id: "iamsubham019/math-track-ttc-scaling"   # <-- change this
+  repo_id: "YOUR_HF_USERNAME/math-track-ttc-scaling"   # <-- change this
   private: true

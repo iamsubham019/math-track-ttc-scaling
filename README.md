@@ -6,6 +6,11 @@ Domain: **Math** — Llama-3.2-1B & Llama-3.2-3B on **GSM8K** and **MATH**.
 This repo implements the six shared strategies end-to-end and independently of the
 Code (Partner B) and Reasoning (Partner C) tracks, per the Team Work Assignment Guide.
 
+**Status: pipeline validated end-to-end, first full results in.** See
+[`RESULTS.md`](RESULTS.md) for the current summary table, findings, and known
+limitations (small sample sizes, verifier quality) — read that before citing any
+numbers in the paper. Full-test-set runs are the next step, budget permitting.
+
 ## Strategies implemented
 
 | # | Strategy | Script |

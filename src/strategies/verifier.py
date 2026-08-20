@@ -76,6 +76,9 @@ def train_verifier(records: list[dict], base_model: str, output_dir: str,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
         learning_rate=lr,
+        warmup_ratio=0.1,        # ease into training instead of taking large early steps
+        max_grad_norm=1.0,       # explicit gradient clipping (prevents the NaN blowup seen at grad_norm=784)
+        weight_decay=0.01,
         eval_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
