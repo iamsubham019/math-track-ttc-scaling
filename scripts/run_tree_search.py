@@ -18,6 +18,7 @@ from src.model_utils import load_config, load_model_and_tokenizer
 from src.data_utils import load_dataset
 from src.strategies.tree_search import run_tree_search
 from src.strategies.verifier import Verifier
+from src.strategies.llm_judge_verifier import LLMJudgeVerifier
 
 
 def main():
@@ -26,17 +27,30 @@ def main():
     ap.add_argument("--dataset", required=True, choices=["gsm8k", "math"])
     ap.add_argument("--split", default="test")
     ap.add_argument("--limit", type=int, default=None)
-    ap.add_argument("--verifier", default=None)
+    ap.add_argument("--verifier", default=None, help="trained DeBERTa verifier checkpoint")
+    ap.add_argument("--judge", action="store_true",
+                     help="use the LLM-as-judge step verifier instead of --verifier (advisor-requested; "
+                          "no training data needed, scores steps by prompting the generation model itself)")
     ap.add_argument("--config", default="configs/config.yaml")
     args = ap.parse_args()
+
+    if args.verifier and args.judge:
+        raise ValueError("Pass either --verifier or --judge, not both.")
 
     cfg = load_config(args.config)
     model, tokenizer = load_model_and_tokenizer(args.model, cfg)
     data = load_dataset(args.dataset, args.split, args.limit)
-    verifier = Verifier(args.verifier) if args.verifier else None
+
+    if args.judge:
+        verifier = LLMJudgeVerifier(model, tokenizer)
+    elif args.verifier:
+        verifier = Verifier(args.verifier)
+    else:
+        verifier = None
 
     os.makedirs(cfg["paths"]["logs_dir"], exist_ok=True)
-    out_path = f"{cfg['paths']['logs_dir']}/tree_search_{args.model}_{args.dataset}.jsonl"
+    verifier_tag = "judge" if args.judge else ("verifierv" if args.verifier else "heuristic")
+    out_path = f"{cfg['paths']['logs_dir']}/tree_search_{verifier_tag}_{args.model}_{args.dataset}.jsonl"
 
     n_correct = 0
     ts_cfg = cfg["tree_search"]
