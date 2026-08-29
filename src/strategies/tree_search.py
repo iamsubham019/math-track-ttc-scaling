@@ -15,8 +15,10 @@ boundary ("\\n") and scoring function are the math-specific adaptation.
 from src.data_utils import build_prompt, SYSTEM_PROMPT
 from src.model_utils import generate
 from src.answer_utils import extract_answer, is_correct
+from src.flop_helper import estimate_flops
 
 STEP_MAX_TOKENS = 80  # tokens per expansion step
+VERIFIER_SCORE_MAX_LEN = 512  # matches Verifier/LLMJudgeVerifier's own truncation, used for FLOP estimate
 
 
 def _heuristic_score(text: str) -> float:
@@ -48,6 +50,15 @@ def run_tree_search(model, tokenizer, item: dict, branching_factor: int = 3,
     beams = [""]  # partial reasoning texts
     total_flops = {"input_tokens": 0, "output_tokens_total": 0, "wall_time_sec": 0.0, "num_samples": 0}
 
+    # A verifier/judge call is a real extra forward pass through some model
+    # (the DeBERTa classifier, or the LLM judge doing its own generate()) that
+    # plain token-counting on the main generation entirely misses — this was
+    # the actual bug behind "avg_output_tokens ... is wrong for tree search":
+    # tree search's true compute cost includes every scoring call spent
+    # pruning the beam, not just the tokens of the surviving path.
+    extra_forward_passes = 0
+    extra_forward_tokens = 0
+
     for depth in range(max_depth):
         candidates = []
         for beam_text in beams:
@@ -63,7 +74,12 @@ def run_tree_search(model, tokenizer, item: dict, branching_factor: int = 3,
 
         scored = []
         for cand in candidates:
-            score = verifier.score(item["question"], cand) if verifier else _heuristic_score(cand)
+            if verifier:
+                score = verifier.score(item["question"], cand)
+                extra_forward_passes += 1
+                extra_forward_tokens += min(len(cand.split()), VERIFIER_SCORE_MAX_LEN)
+            else:
+                score = _heuristic_score(cand)  # no model call, no extra FLOP cost
             scored.append((score, cand))
         scored.sort(key=lambda x: x[0], reverse=True)
         beams = [c for _, c in scored[:beam_width]]
@@ -74,8 +90,13 @@ def run_tree_search(model, tokenizer, item: dict, branching_factor: int = 3,
     best_text = beams[0]
     prediction = extract_answer(best_text)
     correct = is_correct(prediction, item["gold_answer"])
+    flop_fields = estimate_flops(
+        model, "tree_search", item["id"], total_flops,
+        extra_forward_passes=extra_forward_passes, extra_forward_tokens=extra_forward_tokens,
+    )
     return {
         "id": item["id"],
+        "question": item["question"],
         "strategy": "tree_search",
         "prediction": prediction,
         "gold": item["gold_answer"],
@@ -84,5 +105,7 @@ def run_tree_search(model, tokenizer, item: dict, branching_factor: int = 3,
         "depth_reached": depth + 1,
         "beam_width": beam_width,
         "branching_factor": branching_factor,
+        "verifier_calls": extra_forward_passes,
         **total_flops,
+        **flop_fields,
     }

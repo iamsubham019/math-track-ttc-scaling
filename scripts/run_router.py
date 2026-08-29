@@ -1,61 +1,123 @@
+#!/usr/bin/env python
 """
-Run the Router (difficulty-based strategy selection: greedy vs tree search).
-Requires a trained verifier — train it first with scripts/train_verifier.py.
+Run the trained Learned Latent Router — ported from the code track's
+scripts/run_router.py. Checkpointed per-problem to JSON (not just at the
+end), so a Kaggle session timeout mid-run doesn't lose completed problems;
+rerunning this script resumes from the last completed problem.
+
+The old threshold-rule router's CLI entry point is preserved at
+scripts/run_router_threshold.py for comparison.
 
 Example:
-    python scripts/run_router.py --model llama3.2-1b --dataset gsm8k \
-        --verifier checkpoints/verifier --limit 50
+    python scripts/run_router.py --model llama3.2-1b --dataset gsm8k --limit 30 \
+        --verifier checkpoints/verifier_v2
 """
-import argparse
-import json
-import os
-import sys
+import argparse, json, os, sys, yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tqdm import tqdm
-from src.model_utils import load_config, load_model_and_tokenizer
 from src.data_utils import load_dataset
-from src.strategies.router import run_router
+from shared.model_utils import load_model_and_tokenizer
+from src.strategies.router import run_router, load_router, embed_problems
 from src.strategies.verifier import Verifier
+from shared.flop_utils import FlopLedger, FlopRecord
+from shared.checkpoint_utils import atomic_json_save, load_json_checkpoint
+from shared.hub_utils import push_file, download_file
+
+
+def restore_ledger(records):
+    l = FlopLedger()
+    for r in records:
+        l.log(FlopRecord(
+            r["strategy"], r["problem_id"], int(r["num_params"]),
+            int(r["prompt_tokens"]), int(r["generated_tokens"]),
+            int(r.get("num_generations", 1)), int(r.get("extra_forward_passes", 0)),
+            int(r.get("extra_forward_tokens", 0)),
+        ))
+    return l
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, choices=["llama3.2-1b", "llama3.2-3b"])
-    ap.add_argument("--dataset", required=True, choices=["gsm8k", "math"])
-    ap.add_argument("--split", default="test")
-    ap.add_argument("--limit", type=int, default=None)
-    ap.add_argument("--verifier", required=True, help="path to a trained verifier checkpoint")
-    ap.add_argument("--config", default="configs/config.yaml")
-    args = ap.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("--model", required=True, choices=["llama3.2-1b", "llama3.2-3b"])
+    p.add_argument("--dataset", required=True, choices=["gsm8k", "math"])
+    p.add_argument("--split", default="test")
+    p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--config", default="configs/config.yaml")
+    p.add_argument("--router_checkpoint", default="checkpoints/router.safetensors")
+    p.add_argument("--verifier", default=None,
+                    help="optional trained DeBERTa verifier checkpoint, used if the router routes to "
+                         "best_of_n or tree_search")
+    p.add_argument("--no_push", action="store_true")
+    a = p.parse_args()
 
-    cfg = load_config(args.config)
-    model, tokenizer = load_model_and_tokenizer(args.model, cfg)
-    data = load_dataset(args.dataset, args.split, args.limit)
-    verifier = Verifier(args.verifier)
-
+    with open(a.config, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
     os.makedirs(cfg["paths"]["logs_dir"], exist_ok=True)
-    out_path = f"{cfg['paths']['logs_dir']}/router_{args.model}_{args.dataset}.jsonl"
+    os.makedirs(cfg["paths"]["checkpoints_dir"], exist_ok=True)
 
-    r_cfg = cfg["router"]
-    ts_cfg = cfg["tree_search"]
-    n_correct = 0
-    with open(out_path, "w") as f:
-        for item in tqdm(data, desc=f"router/{args.model}/{args.dataset}"):
-            result = run_router(
-                model, tokenizer, item, verifier=verifier, threshold=r_cfg["threshold"],
-                tree_search_kwargs=dict(
-                    branching_factor=ts_cfg["branching_factor"], max_depth=ts_cfg["max_depth"],
-                    beam_width=ts_cfg["beam_width"], temperature=ts_cfg["temperature"],
-                ),
-            )
-            n_correct += int(result["correct"])
-            f.write(json.dumps(result) + "\n")
+    if not os.path.exists(a.router_checkpoint) and not a.no_push:
+        download_file(cfg, "checkpoints/router.safetensors", a.router_checkpoint)
+    if not os.path.exists(a.router_checkpoint):
+        raise FileNotFoundError(f"No router checkpoint at {a.router_checkpoint}. Run scripts/train_router.py first.")
 
-    acc = n_correct / len(data) if data else 0.0
-    print(f"\nRouter | {args.model} | {args.dataset} | acc={acc:.4f} ({n_correct}/{len(data)})")
-    print(f"Results written to {out_path}")
+    problems = load_dataset(a.dataset, split=a.split, limit=a.limit)
+    tag = len(problems)
+    stem = f"router_{a.model}_{a.dataset}_{a.split}_limit{tag}"
+    cp = os.path.join(cfg["paths"]["checkpoints_dir"], stem + ".json")
+    out_jsonl = os.path.join(cfg["paths"]["logs_dir"], stem + ".jsonl")
+    hub_cp = f"checkpoints/{stem}.json"
+
+    if not os.path.exists(cp) and not a.no_push:
+        download_file(cfg, hub_cp, cp)
+    state = load_json_checkpoint(cp) if os.path.exists(cp) else {"results": [], "ledger_records": []}
+    results = state.get("results", [])
+    done = {r["id"] for r in results}
+    ledger = restore_ledger(state.get("ledger_records", []))
+
+    model, tokenizer, num_params = load_model_and_tokenizer(a.model, cfg)
+    embed_dim = embed_problems(problems[:1], cfg).shape[1]
+    router_net = load_router(a.router_checkpoint, cfg, embedding_dim=embed_dim)
+    verifier = Verifier(a.verifier) if a.verifier else None
+
+    print(f"{len(problems)} problems loaded. Already completed: {len(done)}")
+    for i, problem in enumerate(problems, 1):
+        pid = problem["id"]
+        if pid in done:
+            print(f"[{i}/{len(problems)}] {pid}: already complete, skipping")
+            continue
+
+        print(f"[{i}/{len(problems)}] {pid}: routing")
+        ll = FlopLedger()
+        r = run_router(model, tokenizer, num_params, [problem], cfg, ll, router_net, verifier=verifier)[0]
+        results.append(r)
+        for fr in ll.as_dicts():
+            ledger.log(FlopRecord(
+                fr["strategy"], fr["problem_id"], int(fr["num_params"]),
+                int(fr["prompt_tokens"]), int(fr["generated_tokens"]),
+                int(fr.get("num_generations", 1)), int(fr.get("extra_forward_passes", 0)),
+                int(fr.get("extra_forward_tokens", 0)),
+            ))
+
+        atomic_json_save({
+            "version": 3, "results": results, "ledger_records": ledger.as_dicts(),
+            "metadata": {"model": a.model, "dataset": a.dataset, "split": a.split, "limit": tag},
+        }, cp)
+
+        if not a.no_push and i % cfg["hub"].get("push_every_n_problems", 10) == 0:
+            push_file(cp, cfg, hub_cp)
+
+    with open(out_jsonl, "w") as f:
+        for r in results:
+            f.write(json.dumps(r) + "\n")
+
+    n_correct = sum(bool(r["correct"]) for r in results)
+    print(f"Latent Router | {a.model} | {a.dataset} | acc={n_correct/max(len(results),1):.4f} "
+          f"({n_correct}/{len(results)})")
+    print(f"FLOP summary: {ledger.summary()}")
+    print(f"Wrote {out_jsonl}")
+    if not a.no_push:
+        push_file(out_jsonl, cfg, f"logs/{os.path.basename(out_jsonl)}")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,9 @@ from collections import Counter
 from src.data_utils import build_prompt
 from src.model_utils import generate
 from src.answer_utils import extract_answer, is_correct, majority_vote
+from src.flop_helper import estimate_flops
+
+VERIFIER_SCORE_MAX_LEN = 512
 
 
 def run_best_of_n(model, tokenizer, item: dict, n_candidates: int = 8,
@@ -24,8 +27,12 @@ def run_best_of_n(model, tokenizer, item: dict, n_candidates: int = 8,
     )
     candidates = [extract_answer(g) for g in generations]
 
+    extra_forward_passes = 0
+    extra_forward_tokens = 0
     if verifier is not None:
         scores = [verifier.score(item["question"], g) for g in generations]
+        extra_forward_passes = len(generations)  # one verifier call per candidate — real extra compute
+        extra_forward_tokens = sum(min(len(g.split()), VERIFIER_SCORE_MAX_LEN) for g in generations)
         best_idx = max(range(len(scores)), key=lambda i: scores[i])
         prediction = candidates[best_idx]
         selection_method = "verifier"
@@ -34,6 +41,10 @@ def run_best_of_n(model, tokenizer, item: dict, n_candidates: int = 8,
         selection_method = "majority_of_candidates"
 
     correct = is_correct(prediction, item["gold_answer"])
+    flop_fields = estimate_flops(
+        model, "best_of_n", item["id"], flop_stats,
+        extra_forward_passes=extra_forward_passes, extra_forward_tokens=extra_forward_tokens,
+    )
     return {
         "id": item["id"],
         "question": item["question"],
@@ -46,4 +57,5 @@ def run_best_of_n(model, tokenizer, item: dict, n_candidates: int = 8,
         "candidates": candidates,
         "generations": generations,  # full text, needed for verifier training
         **flop_stats,
+        **flop_fields,
     }

@@ -3,6 +3,7 @@
 from src.data_utils import build_prompt
 from src.model_utils import generate
 from src.answer_utils import extract_answer, is_correct, majority_vote
+from src.flop_helper import estimate_flops
 
 
 def run_self_consistency(model, tokenizer, item: dict, n_samples: int = 8,
@@ -16,6 +17,7 @@ def run_self_consistency(model, tokenizer, item: dict, n_samples: int = 8,
     candidates = [extract_answer(g) for g in generations]
     prediction, agreement = majority_vote(candidates)
     correct = is_correct(prediction, item["gold_answer"])
+    flop_fields = estimate_flops(model, "self_consistency", item["id"], flop_stats)
     return {
         "id": item["id"],
         "question": item["question"],
@@ -28,4 +30,5 @@ def run_self_consistency(model, tokenizer, item: dict, n_samples: int = 8,
         "candidates": candidates,
         "generations": generations,      # full text, needed for verifier training
         **flop_stats,
+        **flop_fields,
     }

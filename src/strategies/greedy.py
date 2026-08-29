@@ -3,6 +3,7 @@
 from src.data_utils import build_prompt
 from src.model_utils import generate
 from src.answer_utils import extract_answer, is_correct
+from src.flop_helper import estimate_flops
 
 
 def run_greedy(model, tokenizer, item: dict, max_new_tokens: int = 512) -> dict:
@@ -12,6 +13,7 @@ def run_greedy(model, tokenizer, item: dict, max_new_tokens: int = 512) -> dict:
     )
     prediction = extract_answer(generations[0])
     correct = is_correct(prediction, item["gold_answer"])
+    flop_fields = estimate_flops(model, "greedy", item["id"], flop_stats)
     return {
         "id": item["id"],
         "question": item["question"],
@@ -21,4 +23,5 @@ def run_greedy(model, tokenizer, item: dict, max_new_tokens: int = 512) -> dict:
         "correct": correct,
         "generation": generations[0],
         **flop_stats,
+        **flop_fields,
     }

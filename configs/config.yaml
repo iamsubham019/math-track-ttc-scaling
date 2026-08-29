@@ -44,14 +44,30 @@ verifier:
   # positive examples: (problem, correct solution) pairs
   # negative examples: (problem, incorrect candidate) pairs sampled from best_of_n/self_consistency runs
 
-router:
-  difficulty_features:        # signals used to decide easy vs hard
+router_threshold:
+  # legacy threshold-on-verifier-confidence router — preserved for comparison,
+  # see src/strategies/router_threshold.py / scripts/run_router_threshold.py.
+  # src/strategies/router.py (below) is now the primary, stronger router.
+  difficulty_features:
     - "verifier_confidence"
     - "problem_length_tokens"
     - "self_consistency_agreement"
   easy_strategy: "greedy"
   hard_strategy: "tree_search"
-  threshold: 0.6               # verifier-confidence cutoff below which a problem is "hard"
+  threshold: 0.6
+
+router:
+  # Learned Latent Router — ported from the code track's LatentRouterNet
+  # per mentor feedback ("should be more strong"). See
+  # src/strategies/router.py and scripts/train_router.py.
+  type: "learned_latent"
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  hidden_dim: 64
+  latent_dim: 16
+  epochs: 30
+  lr: 0.001
+  strategies_available: ["greedy", "best_of_n", "self_consistency", "tree_search"]
+  cost_penalty_lambda: 0.05
 
 paths:
   logs_dir: "logs"
@@ -59,5 +75,14 @@ paths:
   results_dir: "logs/results"
 
 hf_hub:
-  repo_id: "YOUR_HF_USERNAME/math-track-ttc-scaling"   # <-- change this
+  repo_id: "iamsubham019/math-track-ttc-scaling"
   private: true
+
+hub:
+  # Used by shared/hub_utils.py (JSON-checkpoint-based, code-track-style push/pull —
+  # router training progress and weights go here). Points at the same repo as
+  # hf_hub above; kept as a separate key so the existing logs/checkpoints backup
+  # flow (src/hub_utils.py, used throughout earlier rounds) is untouched.
+  repo_id: "iamsubham019/math-track-ttc-scaling"
+  private: true
+  push_every_n_problems: 10
