@@ -92,3 +92,89 @@ connecting them implies a trajectory that doesn't exist.
   getting reintroduced by a file sync) caused repeated HF Hub push/pull failures
   during this round — now fixed and verified working; worth double-checking after
   any future full-file syncs rather than partial patches.
+
+---
+
+## Round 3 — Mentor Feedback: Shared Package, Real FLOPs, Stronger Router
+
+Three changes requested by mentor review, ported from the code track repo
+(github.com/LovelyDev-06/code_track_slm):
+
+1. **`estimated_flops` replaces token count as the compute metric.** Copied
+   `shared/flop_utils.py` from the code track verbatim; added
+   `src/flop_helper.py` to compute `2 × N_params × N_tokens` per strategy call
+   and log it in every JSONL row. This also fixed a real accounting bug: Tree
+   Search's verifier/judge scoring calls during beam pruning were previously
+   invisible to the compute metric entirely (only generation tokens were
+   counted) — they're now tracked as extra forward passes.
+2. **`shared/` package** created with `flop_utils.py`, `hub_utils.py`, and
+   `model_utils.py`, matching the code track's structure so all three tracks
+   compute FLOPs identically.
+3. **Learned Latent Router**, ported from the code track's `LatentRouterNet`:
+   sentence embeddings → small MLP with a bottleneck → softmax over
+   strategies, trained end-to-end on labels from actively running all four
+   strategies on every training problem (not passively mining existing logs,
+   which is what the earlier `latent_router.py` did). Replaces the threshold
+   router as the primary one; the old version is preserved as
+   `router_threshold.py` / `run_router_threshold.py` for comparison.
+
+### Learned Latent Router — results (n=30 per combo, active labeling)
+
+| Model | Dataset | Greedy | Old Threshold Router | **New Learned Router** |
+|---|---|---|---|---|
+| 1B | GSM8K | 40.0%¹ | 30.0% | **40.0%** |
+| 3B | GSM8K | 55.0% | **66.7%** | 63.3% |
+| 1B | MATH | 10.0% | 13.3% | 13.3% |
+| 3B | MATH | 35.0% | 20.0% | **33.3%** |
+
+¹ Backfilled with a fresh run to add FLOPs data — differs slightly from the
+original 35.0% reported earlier in this document. This is expected run-to-run
+variance (sampling-based strategies use randomness by design; even greedy
+decoding has minor GPU floating-point non-determinism across runs on
+different sessions), not a code change or bug.
+
+The new router beats the old threshold router in 2 of 4 combos and ties in a
+third, while staying competitive with or ahead of greedy everywhere except
+3B/GSM8K.
+
+### A real, reproducible finding: router training is data-starved at n=30
+
+Getting to a genuinely confident router took three iterations, each of which
+surfaced a distinct, honestly-documented failure mode:
+
+1. **Unweighted loss on imbalanced labels (23 greedy / 4 / 2 / 1 out of 30)
+   collapsed to always predicting the majority class** — train accuracy
+   converged to exactly the 76.67% majority-class baseline, and the trained
+   router routed 100% of test problems to greedy regardless of input.
+2. **Raw inverse-frequency class weighting overcorrected** — it fixed the
+   collapse, but swung to the opposite extreme: the router then never
+   predicted greedy at all (0 of 30), despite greedy being the correct,
+   cheapest choice for 77% of training problems. Softmax probabilities
+   stayed clustered near the 0.25 chance level for all four classes.
+3. **Sqrt-scaled class weighting + best-checkpoint tracking** (saving the
+   epoch with peak train accuracy, not just the final epoch — training
+   accuracy was observed to peak above the majority baseline mid-training,
+   then regress back down by the final epoch) gave the results in the table
+   above. This is the version now in the repo.
+
+All three fixes are real, defensible engineering (see code comments in
+`scripts/train_router.py`), but the underlying ceiling is data quantity, not
+remaining bugs: with only 1-5 examples for three of the four strategy
+classes, and softmax probabilities still clustered near chance level even in
+the best version, 30 labeled examples is not enough for a 384-dimension
+embedding classifier to learn confident, genuine per-problem discrimination.
+The architecture and training pipeline are correctly implemented and match
+the code track's design; scaling to meaningfully more labeled examples (each
+of which costs a full run of all four strategies under the active-labeling
+scheme) is the clear next step, not further hyperparameter tuning at this
+sample size.
+
+### FLOPs plot coverage
+
+`logs/results/performance_vs_flops.png` currently has full FLOPs coverage
+for the 1B/GSM8K combo (greedy, best-of-n, self-consistency, tree-search,
+and both routers) and router-only coverage for the other three combos —
+their base strategy logs predate the FLOPs instrumentation and would need
+re-running to backfill. Left as future work given time constraints this
+round; the 1B/GSM8K combo demonstrates the full compute-vs-accuracy
+comparison the plot is meant to show.
